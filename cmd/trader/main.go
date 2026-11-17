@@ -1,11 +1,89 @@
 package main
 
-import "fmt"
+import (
+	"context"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/HyunTaek-Love/bitcoin-trader/internal/exchange"
+)
 
 func main() {
-    fmt.Println("================================")
-    fmt.Println("       Upbit Auto Trader")
-    fmt.Println("================================")
-    fmt.Println("Version: 0.1.0")
-    fmt.Println("Mode: Read Only")
+	fmt.Println("================================")
+	fmt.Println("       Upbit Auto Trader")
+	fmt.Println("================================")
+
+	client := exchange.NewUpbitClient()
+
+	ctx, cancel := context.WithTimeout(
+		context.Background(),
+		15*time.Second,
+	)
+	defer cancel()
+
+	candles, err := client.GetMinuteCandles(
+		ctx,
+		"KRW-BTC",
+		5,
+		200,
+	)
+
+	if err != nil {
+		log.Fatalf("Failed to get candles: %v", err)
+	}
+
+	fmt.Printf("\nRetrieved candles: %d\n", len(candles))
+
+	fmt.Println("\nLatest 10 candles")
+	fmt.Println(
+		"---------------------------------------------------------------",
+	)
+	fmt.Printf(
+		"%-20s %14s %14s %14s %14s\n",
+		"TIME(KST)",
+		"OPEN",
+		"HIGH",
+		"LOW",
+		"CLOSE",
+	)
+
+	kst, err := time.LoadLocation("Asia/Seoul")
+	if err != nil {
+		log.Fatalf("Failed to load timezone: %v", err)
+	}
+
+	start := len(candles) - 10
+	if start < 0 {
+		start = 0
+	}
+
+	for _, candle := range candles[start:] {
+		fmt.Printf(
+			"%-20s %14.0f %14.0f %14.0f %14.0f\n",
+			candle.Time.In(kst).Format("2006-01-02 15:04"),
+			candle.Open,
+			candle.High,
+			candle.Low,
+			candle.Close,
+		)
+	}
+
+	fmt.Println(
+		"---------------------------------------------------------------",
+	)
+
+	if len(candles) > 0 {
+		latest := candles[len(candles)-1]
+
+		fmt.Printf(
+			"\nLatest BTC price: %.0f KRW\n",
+			latest.Close,
+		)
+
+		fmt.Printf(
+			"Latest candle time: %s\n",
+			latest.Time.In(kst).Format(time.RFC3339),
+		)
+	}
 }
