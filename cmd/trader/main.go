@@ -4,142 +4,119 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/HyunTaek-Love/bitcoin-trader/internal/exchange"
-	"github.com/HyunTaek-Love/bitcoin-trader/internal/indicator"
+	"github.com/HyunTaek-Love/bitcoin-trader/internal/market"
 	"github.com/HyunTaek-Love/bitcoin-trader/internal/storage"
 )
 
+const (
+	marketCode  = "KRW-BTC"
+	candleUnit  = 5
+	candleCount = 200
+)
+
 func main() {
+	ctx, cancel := signal.NotifyContext(
+		context.Background(),
+		os.Interrupt,
+		syscall.SIGTERM,
+	)
+	defer cancel()
+
+	if err := run(ctx); err != nil {
+		log.Printf("Trader stopped with error: %v", err)
+		os.Exit(1)
+	}
+
+	fmt.Println("Trader stopped.")
+}
+
+func run(ctx context.Context) error {
 	fmt.Println("================================")
 	fmt.Println("       Upbit Auto Trader")
 	fmt.Println("================================")
 
-	client := exchange.NewUpbitClient()
-
-	ctx, cancel := context.WithTimeout(
-		context.Background(),
-		15*time.Second,
-	)
-	defer cancel()
-
-	candles, err := client.GetMinuteCandles(
-		ctx,
-		"KRW-BTC",
-		5,
-		200,
-	)
-
-	if err != nil {
-		log.Fatalf("Failed to get candles: %v", err)
-	}
-
-	// Open SQLite database.
+	// 1. Open SQLite database.
 	store, err := storage.OpenSQLite(ctx, "data/trader.db")
 	if err != nil {
-		log.Fatalf("Failed to open database: %v", err)
+		return fmt.Errorf("open database: %w", err)
 	}
 	defer store.Close()
 
-	// Save API candles to database.
-	savedCount, err := store.SaveCandles(ctx, 5, candles)
+	// 2. Fetch historical candles through REST API.
+	fmt.Println("\n[1] Fetching historical candles...")
+
+	restCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+
+	upbit := exchange.NewUpbitClient()
+	candles, err := upbit.GetMinuteCandles(
+		restCtx,
+		marketCode,
+		candleUnit,
+		candleCount,
+	)
+
+	cancel()
+
 	if err != nil {
-		log.Fatalf("Failed to save candles: %v", err)
+		return fmt.Errorf("fetch historical candles: %w", err)
 	}
 
-	fmt.Printf("\nSaved or updated candles: %d\n", savedCount)
+	// 3. Save historical candles.
+	savedCount, err := store.SaveCandles(ctx, candleUnit, candles)
+	if err != nil {
+		return fmt.Errorf("save historical candles: %w", err)
+	}
 
-	// Load candles from database.
-	storedCandles, err := store.GetCandles(
+	fmt.Printf("Historical candles saved or updated: %d\n", savedCount)
+
+	// 4. Start WebSocket streaming.
+	fmt.Println("\n[2] Starting WebSocket stream...")
+	fmt.Printf("Market: %s\n", marketCode)
+	fmt.Printf("Candle interval: %d minute(s)\n", candleUnit)
+	fmt.Println("Press Ctrl+C to stop.")
+
+	wsClient := exchange.NewUpbitWebSocketClient()
+
+	err = wsClient.StreamMinuteCandles(
 		ctx,
-		"KRW-BTC",
-		5,
-		200,
-	)
-	if err != nil {
-		log.Fatalf("Failed to load candles: %v", err)
-	}
+		marketCode,
+		candleUnit,
+		func(candle market.Candle) error {
+			// Save or update the received candle.
+			_, err := store.SaveCandles(
+				ctx,
+				candleUnit,
+				[]market.Candle{candle},
+			)
+			if err != nil {
+				return fmt.Errorf("save realtime candle: %w", err)
+			}
 
-	// Use database candles from this point onward.
-	candles = storedCandles
+			fmt.Printf(
+				"[DB] %s | Close: %.0f | Volume: %.8f\n",
+				candle.Time.Format("2006-01-02 15:04:05"),
+				candle.Close,
+				candle.Volume,
+			)
 
-	fmt.Printf("Loaded candles from DB: %d\n", len(candles))
-
-	fmt.Printf("\nRetrieved candles: %d\n", len(candles))
-
-	fmt.Println("\nLatest 10 candles")
-	fmt.Println(
-		"---------------------------------------------------------------",
-	)
-	fmt.Printf(
-		"%-20s %14s %14s %14s %14s\n",
-		"TIME(KST)",
-		"OPEN",
-		"HIGH",
-		"LOW",
-		"CLOSE",
+			return nil
+		},
 	)
 
-	kst, err := time.LoadLocation("Asia/Seoul")
-	if err != nil {
-		log.Fatalf("Failed to load timezone: %v", err)
+	// Ctrl+C is a normal shutdown.
+	if ctx.Err() != nil {
+		return nil
 	}
-
-	start := len(candles) - 10
-	if start < 0 {
-		start = 0
-	}
-
-	for _, candle := range candles[start:] {
-		fmt.Printf(
-			"%-20s %14.0f %14.0f %14.0f %14.0f\n",
-			candle.Time.In(kst).Format("2006-01-02 15:04"),
-			candle.Open,
-			candle.High,
-			candle.Low,
-			candle.Close,
-		)
-	}
-
-	fmt.Println(
-		"---------------------------------------------------------------",
-	)
-
-	if len(candles) > 0 {
-		latest := candles[len(candles)-1]
-
-		fmt.Printf(
-			"\nLatest BTC price: %.0f KRW\n",
-			latest.Close,
-		)
-
-		fmt.Printf(
-			"Latest candle time: %s\n",
-			latest.Time.In(kst).Format(time.RFC3339),
-		)
-	}
-
-	// Extract closing prices.
-	prices := make([]float64, 0, len(candles))
-
-	for _, candle := range candles {
-		prices = append(prices, candle.Close)
-	}
-
-	// Calculate technical indicators.
-	result, err := indicator.Calculate(prices)
 
 	if err != nil {
-		log.Fatalf("Failed to calculate indicators: %v", err)
+		return fmt.Errorf("websocket stream: %w", err)
 	}
 
-	fmt.Println("\nTechnical Indicators")
-	fmt.Println("--------------------------------")
-
-	fmt.Printf("SMA20 : %.2f KRW\n", result.SMA20)
-	fmt.Printf("SMA50 : %.2f KRW\n", result.SMA50)
-	fmt.Printf("RSI14 : %.2f\n", result.RSI14)
-
-	fmt.Println("--------------------------------")
+	return nil
 }
