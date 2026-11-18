@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/HyunTaek-Love/bitcoin-trader/internal/exchange"
+	"github.com/HyunTaek-Love/bitcoin-trader/internal/indicator"
 )
 
 func main() {
@@ -86,4 +87,27 @@ func main() {
 			latest.Time.In(kst).Format(time.RFC3339),
 		)
 	}
+
+	// Extract closing prices.
+	prices := make([]float64, 0, len(candles))
+
+	for _, candle := range candles {
+		prices = append(prices, candle.Close)
+	}
+
+	// Calculate technical indicators.
+	result, err := indicator.Calculate(prices)
+
+	if err != nil {
+		log.Fatalf("Failed to calculate indicators: %v", err)
+	}
+
+	fmt.Println("\nTechnical Indicators")
+	fmt.Println("--------------------------------")
+
+	fmt.Printf("SMA20 : %.2f KRW\n", result.SMA20)
+	fmt.Printf("SMA50 : %.2f KRW\n", result.SMA50)
+	fmt.Printf("RSI14 : %.2f\n", result.RSI14)
+
+	fmt.Println("--------------------------------")
 }
