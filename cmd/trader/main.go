@@ -8,6 +8,7 @@ import (
 
 	"github.com/HyunTaek-Love/bitcoin-trader/internal/exchange"
 	"github.com/HyunTaek-Love/bitcoin-trader/internal/indicator"
+	"github.com/HyunTaek-Love/bitcoin-trader/internal/storage"
 )
 
 func main() {
@@ -33,6 +34,37 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to get candles: %v", err)
 	}
+
+	// Open SQLite database.
+	store, err := storage.OpenSQLite(ctx, "data/trader.db")
+	if err != nil {
+		log.Fatalf("Failed to open database: %v", err)
+	}
+	defer store.Close()
+
+	// Save API candles to database.
+	savedCount, err := store.SaveCandles(ctx, 5, candles)
+	if err != nil {
+		log.Fatalf("Failed to save candles: %v", err)
+	}
+
+	fmt.Printf("\nSaved or updated candles: %d\n", savedCount)
+
+	// Load candles from database.
+	storedCandles, err := store.GetCandles(
+		ctx,
+		"KRW-BTC",
+		5,
+		200,
+	)
+	if err != nil {
+		log.Fatalf("Failed to load candles: %v", err)
+	}
+
+	// Use database candles from this point onward.
+	candles = storedCandles
+
+	fmt.Printf("Loaded candles from DB: %d\n", len(candles))
 
 	fmt.Printf("\nRetrieved candles: %d\n", len(candles))
 
