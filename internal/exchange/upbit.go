@@ -43,12 +43,50 @@ type candleResponse struct {
 	TradeAmount    float64 `json:"candle_acc_trade_price"`
 }
 
-// GetMinuteCandles retrieves minute candles.
+// GetMinuteCandles retrieves the latest minute candles.
 func (c *UpbitClient) GetMinuteCandles(
 	ctx context.Context,
 	marketCode string,
 	unit int,
 	count int,
+) ([]market.Candle, error) {
+	return c.getMinuteCandles(
+		ctx,
+		marketCode,
+		unit,
+		count,
+		time.Time{},
+	)
+}
+
+// GetMinuteCandlesBefore retrieves candles before the specified time.
+func (c *UpbitClient) GetMinuteCandlesBefore(
+	ctx context.Context,
+	marketCode string,
+	unit int,
+	count int,
+	to time.Time,
+) ([]market.Candle, error) {
+	if to.IsZero() {
+		return nil, fmt.Errorf("to time must not be zero")
+	}
+
+	return c.getMinuteCandles(
+		ctx,
+		marketCode,
+		unit,
+		count,
+		to,
+	)
+}
+
+// getMinuteCandles retrieves candles with an optional end time.
+func (c *UpbitClient) getMinuteCandles(
+	ctx context.Context,
+	marketCode string,
+	unit int,
+	count int,
+	to time.Time,
 ) ([]market.Candle, error) {
 
 	validUnits := map[int]bool{
@@ -70,6 +108,10 @@ func (c *UpbitClient) GetMinuteCandles(
 		return nil, fmt.Errorf("count must be between 1 and 200")
 	}
 
+	if marketCode == "" {
+		return nil, fmt.Errorf("market code must not be empty")
+	}
+
 	endpoint := fmt.Sprintf(
 		"%s/candles/minutes/%d",
 		baseURL,
@@ -79,6 +121,11 @@ func (c *UpbitClient) GetMinuteCandles(
 	params := url.Values{}
 	params.Set("market", marketCode)
 	params.Set("count", strconv.Itoa(count))
+
+	// Add the 'to' parameter when historical data is requested.
+	if !to.IsZero() {
+		params.Set("to", to.UTC().Format(time.RFC3339))
+	}
 
 	req, err := http.NewRequestWithContext(
 		ctx,
