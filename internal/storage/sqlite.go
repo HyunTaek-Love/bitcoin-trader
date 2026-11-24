@@ -64,6 +64,7 @@ func OpenSQLite(ctx context.Context, dbPath string) (*SQLiteStore, error) {
 }
 
 // createTables creates the required database tables.
+
 func (s *SQLiteStore) createTables(ctx context.Context) error {
 	query := `
 	CREATE TABLE IF NOT EXISTS candles (
@@ -85,6 +86,43 @@ func (s *SQLiteStore) createTables(ctx context.Context) error {
 
 	CREATE INDEX IF NOT EXISTS idx_candles_market_time
 	ON candles(market, unit, candle_time);
+
+	CREATE TABLE IF NOT EXISTS paper_accounts (
+		account_id TEXT PRIMARY KEY,
+		market TEXT NOT NULL,
+		unit INTEGER NOT NULL,
+		initial_cash REAL NOT NULL CHECK(initial_cash >= 0),
+		cash REAL NOT NULL CHECK(cash >= 0),
+		asset_volume REAL NOT NULL DEFAULT 0 CHECK(asset_volume >= 0),
+		avg_buy_price REAL NOT NULL DEFAULT 0,
+		realized_pnl REAL NOT NULL DEFAULT 0,
+		last_processed_candle_time INTEGER NOT NULL DEFAULT 0,
+		created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+		updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+	);
+
+	CREATE TABLE IF NOT EXISTS paper_trades (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		account_id TEXT NOT NULL,
+		market TEXT NOT NULL,
+		unit INTEGER NOT NULL,
+		candle_time INTEGER NOT NULL,
+		side TEXT NOT NULL CHECK(side IN ('BUY', 'SELL')),
+		price REAL NOT NULL CHECK(price > 0),
+		volume REAL NOT NULL CHECK(volume > 0),
+		fee REAL NOT NULL DEFAULT 0,
+		total REAL NOT NULL,
+		realized_pnl REAL NOT NULL DEFAULT 0,
+		created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+
+		FOREIGN KEY(account_id)
+			REFERENCES paper_accounts(account_id),
+
+		UNIQUE(account_id, candle_time, side)
+	);
+
+	CREATE INDEX IF NOT EXISTS idx_paper_trades_account_time
+	ON paper_trades(account_id, candle_time);
 	`
 
 	if _, err := s.db.ExecContext(ctx, query); err != nil {
