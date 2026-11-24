@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -35,8 +36,9 @@ func main() {
 	account, err := store.GetPaperAccount(ctx, *accountID)
 
 	if err != nil {
-		// Create the account only when it does not exist.
-		account, err = nil, nil
+		if !errors.Is(err, storage.ErrPaperAccountNotFound) {
+			log.Fatalf("Get paper account failed: %v", err)
+		}
 
 		err = store.CreatePaperAccount(ctx, storage.PaperAccount{
 			AccountID:   *accountID,

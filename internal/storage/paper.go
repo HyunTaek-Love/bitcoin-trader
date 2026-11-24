@@ -3,10 +3,13 @@ package storage
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"math"
 	"time"
 )
+
+var ErrPaperAccountNotFound = errors.New("paper account not found")
 
 // PaperAccount represents a simulated trading account.
 type PaperAccount struct {
@@ -141,8 +144,12 @@ func (s *SQLiteStore) GetPaperAccount(
 		&updatedAt,
 	)
 	if err != nil {
-		if err == sql.ErrNoRows {
-			return nil, fmt.Errorf("paper account not found: %s", accountID)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, fmt.Errorf(
+				"%w: %s",
+				ErrPaperAccountNotFound,
+				accountID,
+			)
 		}
 
 		return nil, fmt.Errorf("get paper account: %w", err)
@@ -387,4 +394,166 @@ func isFiniteNonNegative(value float64) bool {
 	return value >= 0 &&
 		!math.IsNaN(value) &&
 		!math.IsInf(value, 0)
+}
+
+// ExecutePaperTrade atomically updates the account and saves a trade.
+func (s *SQLiteStore) ExecutePaperTrade(
+	ctx context.Context,
+	account PaperAccount,
+	trade PaperTrade,
+) error {
+	if account.AccountID == "" ||
+		trade.AccountID == "" ||
+		account.AccountID != trade.AccountID {
+		return fmt.Errorf("account ID mismatch")
+	}
+
+	if account.Market == "" ||
+		account.Market != trade.Market ||
+		account.Unit <= 0 ||
+		account.Unit != trade.Unit {
+		return fmt.Errorf("account and trade market configuration mismatch")
+	}
+
+	if trade.Side != "BUY" && trade.Side != "SELL" {
+		return fmt.Errorf("invalid trade side: %s", trade.Side)
+	}
+
+	if trade.CandleTime <= 0 ||
+		account.LastProcessedCandleTime != trade.CandleTime {
+		return fmt.Errorf("invalid processed candle time")
+	}
+
+	accountValues := []float64{
+		account.Cash,
+		account.AssetVolume,
+		account.AvgBuyPrice,
+		account.RealizedPnL,
+	}
+
+	for _, value := range accountValues {
+		if math.IsNaN(value) || math.IsInf(value, 0) {
+			return fmt.Errorf("account contains invalid numeric value")
+		}
+	}
+
+	if account.Cash < 0 ||
+		account.AssetVolume < 0 ||
+		account.AvgBuyPrice < 0 {
+		return fmt.Errorf("account balance values must not be negative")
+	}
+
+	tradeValues := []float64{
+		trade.Price,
+		trade.Volume,
+		trade.Fee,
+		trade.Total,
+		trade.RealizedPnL,
+	}
+
+	for _, value := range tradeValues {
+		if math.IsNaN(value) || math.IsInf(value, 0) {
+			return fmt.Errorf("trade contains invalid numeric value")
+		}
+	}
+
+	if trade.Price <= 0 ||
+		trade.Volume <= 0 ||
+		trade.Fee < 0 ||
+		trade.Total < 0 {
+		return fmt.Errorf("invalid trade values")
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin paper trade transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	// Update the account only if this candle has not been processed.
+	updateQuery := `
+	UPDATE paper_accounts
+	SET
+		cash = ?,
+		asset_volume = ?,
+		avg_buy_price = ?,
+		realized_pnl = ?,
+		last_processed_candle_time = ?,
+		updated_at = unixepoch()
+	WHERE
+		account_id = ?
+		AND market = ?
+		AND unit = ?
+		AND last_processed_candle_time < ?
+	`
+
+	result, err := tx.ExecContext(
+		ctx,
+		updateQuery,
+		account.Cash,
+		account.AssetVolume,
+		account.AvgBuyPrice,
+		account.RealizedPnL,
+		account.LastProcessedCandleTime,
+		account.AccountID,
+		account.Market,
+		account.Unit,
+		trade.CandleTime,
+	)
+	if err != nil {
+		return fmt.Errorf("update paper account: %w", err)
+	}
+
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("get updated account rows: %w", err)
+	}
+
+	if rows != 1 {
+		return fmt.Errorf(
+			"account not found or candle already processed: %s",
+			account.AccountID,
+		)
+	}
+
+	// Save the trade in the same transaction.
+	insertQuery := `
+	INSERT INTO paper_trades (
+		account_id,
+		market,
+		unit,
+		candle_time,
+		side,
+		price,
+		volume,
+		fee,
+		total,
+		realized_pnl
+	)
+	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`
+
+	_, err = tx.ExecContext(
+		ctx,
+		insertQuery,
+		trade.AccountID,
+		trade.Market,
+		trade.Unit,
+		trade.CandleTime,
+		trade.Side,
+		trade.Price,
+		trade.Volume,
+		trade.Fee,
+		trade.Total,
+		trade.RealizedPnL,
+	)
+	if err != nil {
+		return fmt.Errorf("insert paper trade: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit paper trade: %w", err)
+	}
+
+	return nil
 }

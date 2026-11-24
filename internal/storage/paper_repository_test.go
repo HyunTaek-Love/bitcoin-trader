@@ -165,3 +165,157 @@ func TestPaperTradeDuplicate(t *testing.T) {
 		t.Fatal("expected duplicate trade error")
 	}
 }
+
+func TestExecutePaperTrade(t *testing.T) {
+	ctx := context.Background()
+
+	store, err := OpenSQLite(
+		ctx,
+		filepath.Join(t.TempDir(), "paper.db"),
+	)
+	if err != nil {
+		t.Fatalf("OpenSQLite failed: %v", err)
+	}
+	defer store.Close()
+
+	initial := PaperAccount{
+		AccountID:   "transaction-test",
+		Market:      "KRW-BTC",
+		Unit:        5,
+		InitialCash: 100000,
+	}
+
+	if err := store.CreatePaperAccount(ctx, initial); err != nil {
+		t.Fatal(err)
+	}
+
+	const candleTime int64 = 1790000000
+
+	updated := initial
+	updated.Cash = 89995
+	updated.AssetVolume = 0.0001
+	updated.AvgBuyPrice = 100000000
+	updated.LastProcessedCandleTime = candleTime
+
+	trade := PaperTrade{
+		AccountID:  initial.AccountID,
+		Market:     initial.Market,
+		Unit:       initial.Unit,
+		CandleTime: candleTime,
+		Side:       "BUY",
+		Price:      100000000,
+		Volume:     0.0001,
+		Fee:        5,
+		Total:      10005,
+	}
+
+	if err := store.ExecutePaperTrade(ctx, updated, trade); err != nil {
+		t.Fatalf("ExecutePaperTrade failed: %v", err)
+	}
+
+	account, err := store.GetPaperAccount(ctx, initial.AccountID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if account.Cash != 89995 {
+		t.Errorf("expected cash 89995, got %.2f", account.Cash)
+	}
+
+	if account.AssetVolume != 0.0001 {
+		t.Errorf("expected asset volume 0.0001, got %f", account.AssetVolume)
+	}
+
+	trades, err := store.GetPaperTrades(ctx, initial.AccountID, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(trades) != 1 {
+		t.Fatalf("expected 1 trade, got %d", len(trades))
+	}
+}
+
+func TestExecutePaperTradeRollback(t *testing.T) {
+	ctx := context.Background()
+
+	store, err := OpenSQLite(
+		ctx,
+		filepath.Join(t.TempDir(), "paper.db"),
+	)
+	if err != nil {
+		t.Fatalf("OpenSQLite failed: %v", err)
+	}
+	defer store.Close()
+
+	initial := PaperAccount{
+		AccountID:   "rollback-test",
+		Market:      "KRW-BTC",
+		Unit:        5,
+		InitialCash: 100000,
+	}
+
+	if err := store.CreatePaperAccount(ctx, initial); err != nil {
+		t.Fatal(err)
+	}
+
+	const candleTime int64 = 1790000000
+
+	trade := PaperTrade{
+		AccountID:  initial.AccountID,
+		Market:     initial.Market,
+		Unit:       initial.Unit,
+		CandleTime: candleTime,
+		Side:       "BUY",
+		Price:      100000000,
+		Volume:     0.0001,
+		Fee:        5,
+		Total:      10005,
+	}
+
+	// Insert the same trade first to force a UNIQUE constraint failure.
+	if err := store.SavePaperTrade(ctx, trade); err != nil {
+		t.Fatal(err)
+	}
+
+	updated := initial
+	updated.Cash = 89995
+	updated.AssetVolume = 0.0001
+	updated.AvgBuyPrice = 100000000
+	updated.LastProcessedCandleTime = candleTime
+
+	err = store.ExecutePaperTrade(ctx, updated, trade)
+	if err == nil {
+		t.Fatal("expected transaction failure")
+	}
+
+	// The account update must have been rolled back.
+	account, err := store.GetPaperAccount(ctx, initial.AccountID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if account.Cash != 100000 {
+		t.Errorf("expected cash 100000 after rollback, got %.2f", account.Cash)
+	}
+
+	if account.AssetVolume != 0 {
+		t.Errorf("expected asset volume 0 after rollback, got %f", account.AssetVolume)
+	}
+
+	if account.LastProcessedCandleTime != 0 {
+		t.Errorf(
+			"expected last processed candle time 0 after rollback, got %d",
+			account.LastProcessedCandleTime,
+		)
+	}
+
+	trades, err := store.GetPaperTrades(ctx, initial.AccountID, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(trades) != 1 {
+		t.Errorf("expected original 1 trade, got %d", len(trades))
+	}
+}
