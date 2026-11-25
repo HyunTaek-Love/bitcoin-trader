@@ -319,3 +319,110 @@ func TestExecutePaperTradeRollback(t *testing.T) {
 		t.Errorf("expected original 1 trade, got %d", len(trades))
 	}
 }
+
+func TestPaperAccountPersistsAfterRestart(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "paper.db")
+
+	store, err := OpenSQLite(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("OpenSQLite failed: %v", err)
+	}
+
+	initial := PaperAccount{
+		AccountID:   "restart-test",
+		Market:      "KRW-BTC",
+		Unit:        5,
+		InitialCash: 100000,
+	}
+
+	if err := store.CreatePaperAccount(ctx, initial); err != nil {
+		t.Fatal(err)
+	}
+
+	const candleTime int64 = 1790000000
+
+	updated := initial
+	updated.Cash = 89995
+	updated.AssetVolume = 0.0001
+	updated.AvgBuyPrice = 100000000
+	updated.LastProcessedCandleTime = candleTime
+
+	trade := PaperTrade{
+		AccountID:  initial.AccountID,
+		Market:     initial.Market,
+		Unit:       initial.Unit,
+		CandleTime: candleTime,
+		Side:       "BUY",
+		Price:      100000000,
+		Volume:     0.0001,
+		Fee:        5,
+		Total:      100005,
+	}
+
+	if err := store.ExecutePaperTrade(ctx, updated, trade); err != nil {
+		t.Fatalf("ExecutePaperTrade failed: %v", err)
+	}
+
+	// Simulate application shutdown.
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Simulate application restart.
+	store, err = OpenSQLite(ctx, dbPath)
+	if err != nil {
+		t.Fatalf("OpenSQLite after restart failed: %v", err)
+	}
+	defer store.Close()
+
+	account, err := store.GetPaperAccount(ctx, initial.AccountID)
+	if err != nil {
+		t.Fatalf("GetPaperAccount after restart failed: %v", err)
+	}
+
+	if account.Cash != 89995 {
+		t.Errorf("expected cash 89995, got %.2f", account.Cash)
+	}
+
+	if account.AssetVolume != 0.0001 {
+		t.Errorf("expected asset volume 0.0001, got %f", account.AssetVolume)
+	}
+
+	if account.AvgBuyPrice != 100000000 {
+		t.Errorf("unexpected average buy price: %f", account.AvgBuyPrice)
+	}
+
+	if account.LastProcessedCandleTime != candleTime {
+		t.Errorf(
+			"expected last processed time %d, got %d",
+			candleTime,
+			account.LastProcessedCandleTime,
+		)
+	}
+
+	// Attempt to execute the same trade again after restart.
+	err = store.ExecutePaperTrade(ctx, *account, trade)
+	if err == nil {
+		t.Fatal("expected duplicate trade execution to fail")
+	}
+
+	// Verify that the account was not changed.
+	afterDuplicate, err := store.GetPaperAccount(ctx, initial.AccountID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if afterDuplicate.Cash != 89995 {
+		t.Errorf("cash changed after duplicate: %.2f", afterDuplicate.Cash)
+	}
+
+	trades, err := store.GetPaperTrades(ctx, initial.AccountID, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(trades) != 1 {
+		t.Errorf("expected exactly 1 trade, got %d", len(trades))
+	}
+}
