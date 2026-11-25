@@ -14,11 +14,12 @@ import (
 	"github.com/HyunTaek-Love/bitcoin-trader/internal/market"
 )
 
-const baseURL = "https://api.upbit.com/v1"
+const defaultBaseURL = "https://api.upbit.com/v1"
 
 // UpbitClient handles public Upbit API requests.
 type UpbitClient struct {
 	httpClient *http.Client
+	baseURL    string
 }
 
 // NewUpbitClient creates an Upbit API client.
@@ -27,6 +28,7 @@ func NewUpbitClient() *UpbitClient {
 		httpClient: &http.Client{
 			Timeout: 10 * time.Second,
 		},
+		baseURL: defaultBaseURL,
 	}
 }
 
@@ -114,7 +116,7 @@ func (c *UpbitClient) getMinuteCandles(
 
 	endpoint := fmt.Sprintf(
 		"%s/candles/minutes/%d",
-		baseURL,
+		c.baseURL,
 		unit,
 	)
 
