@@ -92,17 +92,6 @@ func (p *StreamProcessor) HandleCandle(
 		return nil, nil
 	}
 
-	expectedTime := p.currentCandleTime.Add(
-		time.Duration(p.unit) * time.Minute,
-	)
-
-	// If a candle was missed, do not execute late.
-	// Establish a new baseline and wait for the next boundary.
-	if !candle.Time.Equal(expectedTime) {
-		p.currentCandleTime = candle.Time
-		return nil, nil
-	}
-
 	// Load completed candles from SQLite.
 	history, err := p.store.GetCandles(
 		ctx,
@@ -125,6 +114,22 @@ func (p *StreamProcessor) HandleCandle(
 
 	// Not enough history yet.
 	if len(completed) < strategy.MinimumCandles {
+		p.currentCandleTime = candle.Time
+		return nil, nil
+	}
+
+	// The latest completed candle must be directly before
+	// the current execution candle.
+	//
+	// This allows recovery after a WebSocket reconnect,
+	// but prevents execution when historical data has gaps.
+	lastCompleted := completed[len(completed)-1]
+
+	expectedExecutionTime := lastCompleted.Time.Add(
+		time.Duration(p.unit) * time.Minute,
+	)
+
+	if !expectedExecutionTime.Equal(candle.Time) {
 		p.currentCandleTime = candle.Time
 		return nil, nil
 	}

@@ -254,3 +254,160 @@ func TestStreamProcessorIgnoresOlderCandle(t *testing.T) {
 		)
 	}
 }
+
+func TestStreamProcessorRecoversAfterGap(t *testing.T) {
+	engine, store := setupPaperEngine(t)
+	ctx := context.Background()
+
+	processor, err := NewStreamProcessor(
+		store,
+		engine,
+		"KRW-BTC",
+		5,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	start := time.Date(
+		2026, 1, 1, 0, 0, 0, 0, time.UTC,
+	)
+
+	history := make([]market.Candle, strategy.MinimumCandles)
+
+	for i := range history {
+		history[i] = market.Candle{
+			Market:      "KRW-BTC",
+			Time:        start.Add(time.Duration(i*5) * time.Minute),
+			Open:        100000000,
+			High:        101000000,
+			Low:         99000000,
+			Close:       100000000,
+			Volume:      1,
+			TradeAmount: 100000000,
+		}
+	}
+
+	if _, err := store.SaveCandles(ctx, 5, history); err != nil {
+		t.Fatal(err)
+	}
+
+	// First WebSocket candle establishes the baseline.
+	firstRealtime := market.Candle{
+		Market: "KRW-BTC",
+		Time: start.Add(
+			time.Duration(strategy.MinimumCandles*5) * time.Minute,
+		),
+		Open:   100000000,
+		High:   101000000,
+		Low:    99000000,
+		Close:  100000000,
+		Volume: 1,
+	}
+
+	if _, err := processor.HandleCandle(ctx, firstRealtime); err != nil {
+		t.Fatal(err)
+	}
+
+	// Simulate REST recovery of the candle missed by WebSocket.
+	recovered := firstRealtime
+	recovered.Time = firstRealtime.Time.Add(5 * time.Minute)
+
+	if _, err := store.SaveCandles(
+		ctx,
+		5,
+		[]market.Candle{recovered},
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	// WebSocket reconnects and sends the current candle.
+	current := recovered
+	current.Time = recovered.Time.Add(5 * time.Minute)
+
+	result, err := processor.HandleCandle(ctx, current)
+	if err != nil {
+		t.Fatalf("HandleCandle failed: %v", err)
+	}
+
+	if result == nil {
+		t.Fatal("expected strategy evaluation after recovery")
+	}
+
+	if !result.Evaluated {
+		t.Fatal("expected strategy to be evaluated")
+	}
+
+	if result.Executed {
+		t.Fatal("HOLD signal must not execute a trade")
+	}
+}
+
+func TestStreamProcessorSkipsWhenRecoveryHasGap(t *testing.T) {
+	engine, store := setupPaperEngine(t)
+	ctx := context.Background()
+
+	processor, err := NewStreamProcessor(
+		store,
+		engine,
+		"KRW-BTC",
+		5,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	start := time.Date(
+		2026, 1, 1, 0, 0, 0, 0, time.UTC,
+	)
+
+	history := make([]market.Candle, strategy.MinimumCandles)
+
+	for i := range history {
+		history[i] = market.Candle{
+			Market: "KRW-BTC",
+			Time: start.Add(
+				time.Duration(i*5) * time.Minute,
+			),
+			Open:   100000000,
+			High:   101000000,
+			Low:    99000000,
+			Close:  100000000,
+			Volume: 1,
+		}
+	}
+
+	if _, err := store.SaveCandles(ctx, 5, history); err != nil {
+		t.Fatal(err)
+	}
+
+	firstRealtime := market.Candle{
+		Market: "KRW-BTC",
+		Time: start.Add(
+			time.Duration(strategy.MinimumCandles*5) * time.Minute,
+		),
+		Open:   100000000,
+		High:   101000000,
+		Low:    99000000,
+		Close:  100000000,
+		Volume: 1,
+	}
+
+	if _, err := processor.HandleCandle(ctx, firstRealtime); err != nil {
+		t.Fatal(err)
+	}
+
+	// The next 5-minute candle is missing from SQLite.
+	// The current candle arrives 10 minutes later.
+	current := firstRealtime
+	current.Time = firstRealtime.Time.Add(10 * time.Minute)
+
+	result, err := processor.HandleCandle(ctx, current)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if result != nil {
+		t.Fatal("must skip evaluation when recovered history has a gap")
+	}
+}
