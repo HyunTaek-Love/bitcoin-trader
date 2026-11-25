@@ -171,3 +171,86 @@ func TestStreamProcessorSkipsMissedCandle(t *testing.T) {
 		t.Fatal("must not evaluate after missing a candle")
 	}
 }
+
+func TestStreamProcessorIgnoresOlderCandle(t *testing.T) {
+	engine, store := setupPaperEngine(t)
+	ctx := context.Background()
+
+	processor, err := NewStreamProcessor(
+		store,
+		engine,
+		"KRW-BTC",
+		5,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	start := time.Date(
+		2026, 1, 1, 0, 0, 0, 0, time.UTC,
+	)
+
+	original := market.Candle{
+		Market: "KRW-BTC",
+		Time:   start,
+		Open:   100000000,
+		High:   101000000,
+		Low:    99000000,
+		Close:  100000000,
+		Volume: 1,
+	}
+
+	if _, err := store.SaveCandles(
+		ctx,
+		5,
+		[]market.Candle{original},
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	current := original
+	current.Time = start.Add(5 * time.Minute)
+
+	if _, err := processor.HandleCandle(
+		ctx,
+		current,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	// Send a delayed candle with a different closing price.
+	delayed := original
+	delayed.Close = 90000000
+
+	if _, err := processor.HandleCandle(
+		ctx,
+		delayed,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	candles, err := store.GetCandles(
+		ctx,
+		"KRW-BTC",
+		5,
+		2,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(candles) != 2 {
+		t.Fatalf(
+			"expected 2 candles, got %d",
+			len(candles),
+		)
+	}
+
+	if candles[0].Close != original.Close {
+		t.Errorf(
+			"historical candle was overwritten: expected=%.0f actual=%.0f",
+			original.Close,
+			candles[0].Close,
+		)
+	}
+}

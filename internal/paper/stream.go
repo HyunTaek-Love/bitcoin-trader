@@ -64,6 +64,12 @@ func (p *StreamProcessor) HandleCandle(
 		return nil, fmt.Errorf("invalid candle")
 	}
 
+	// Ignore older candle messages before persisting them.
+	// This prevents delayed messages from overwriting historical data.
+	if p.initialized && candle.Time.Before(p.currentCandleTime) {
+		return nil, nil
+	}
+
 	// Persist the latest candle update.
 	if _, err := p.store.SaveCandles(
 		ctx,
@@ -78,11 +84,6 @@ func (p *StreamProcessor) HandleCandle(
 	if !p.initialized {
 		p.currentCandleTime = candle.Time
 		p.initialized = true
-		return nil, nil
-	}
-
-	// Ignore older candle messages.
-	if candle.Time.Before(p.currentCandleTime) {
 		return nil, nil
 	}
 
