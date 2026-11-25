@@ -148,4 +148,52 @@ func TestProcessHoldSignal(t *testing.T) {
 	if account.AssetVolume != 0 {
 		t.Errorf("expected asset volume 0, got %f", account.AssetVolume)
 	}
+
+	expectedProcessedTime := candles[len(candles)-1].Time.Unix()
+
+	if account.LastProcessedCandleTime != expectedProcessedTime {
+		t.Errorf(
+			"expected last processed time %d, got %d",
+			expectedProcessedTime,
+			account.LastProcessedCandleTime,
+		)
+	}
+
+	// Processing the same candle again must not evaluate it again.
+	duplicateResult, err := engine.Process(
+		context.Background(),
+		candles,
+	)
+	if err != nil {
+		t.Fatalf("duplicate Process failed: %v", err)
+	}
+
+	if duplicateResult.Reason != "Execution candle already processed" {
+		t.Errorf(
+			"unexpected duplicate reason: %s",
+			duplicateResult.Reason,
+		)
+	}
+
+	afterDuplicate, err := store.GetPaperAccount(
+		context.Background(),
+		"engine-test",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if afterDuplicate.LastProcessedCandleTime != expectedProcessedTime {
+		t.Errorf(
+			"processed time changed after duplicate: %d",
+			afterDuplicate.LastProcessedCandleTime,
+		)
+	}
+
+	if afterDuplicate.Cash != 100000 {
+		t.Errorf(
+			"cash changed after duplicate: %.2f",
+			afterDuplicate.Cash,
+		)
+	}
 }

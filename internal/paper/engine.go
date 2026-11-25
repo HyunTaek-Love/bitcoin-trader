@@ -140,6 +140,25 @@ func (e *Engine) Process(
 
 	executionTime := executionCandle.Time.Unix()
 
+	markProcessed := func() error {
+		marked, err := e.store.MarkPaperCandleProcessed(
+			ctx,
+			account.AccountID,
+			account.Market,
+			account.Unit,
+			executionTime,
+		)
+		if err != nil {
+			return fmt.Errorf("mark candle processed: %w", err)
+		}
+
+		if !marked {
+			result.Reason = "Execution candle already processed"
+		}
+
+		return nil
+	}
+
 	// Prevent processing an execution candle more than once.
 	if executionTime <= account.LastProcessedCandleTime {
 		result.Reason = "Execution candle already processed"
@@ -158,11 +177,21 @@ func (e *Engine) Process(
 	case strategy.Buy:
 		if account.AssetVolume > 0 {
 			result.Reason = "Buy signal ignored: position already exists"
+
+			if err := markProcessed(); err != nil {
+				return result, err
+			}
+
 			return result, nil
 		}
 
 		if account.Cash <= 0 {
 			result.Reason = "Buy signal ignored: insufficient cash"
+
+			if err := markProcessed(); err != nil {
+				return result, err
+			}
+
 			return result, nil
 		}
 
@@ -188,6 +217,11 @@ func (e *Engine) Process(
 	case strategy.Sell:
 		if account.AssetVolume <= 0 {
 			result.Reason = "Sell signal ignored: no position"
+
+			if err := markProcessed(); err != nil {
+				return result, err
+			}
+
 			return result, nil
 		}
 
@@ -212,6 +246,10 @@ func (e *Engine) Process(
 
 	default:
 		result.Reason = evaluation.Reason
+
+		if err := markProcessed(); err != nil {
+			return result, err
+		}
 	}
 
 	return result, nil

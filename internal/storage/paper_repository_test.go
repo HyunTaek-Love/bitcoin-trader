@@ -426,3 +426,73 @@ func TestPaperAccountPersistsAfterRestart(t *testing.T) {
 		t.Errorf("expected exactly 1 trade, got %d", len(trades))
 	}
 }
+
+func TestMarkPaperCandleProcessed(t *testing.T) {
+	ctx := context.Background()
+
+	store, err := OpenSQLite(
+		ctx,
+		filepath.Join(t.TempDir(), "paper.db"),
+	)
+	if err != nil {
+		t.Fatalf("OpenSQLite failed: %v", err)
+	}
+	defer store.Close()
+
+	account := PaperAccount{
+		AccountID:   "processed-test",
+		Market:      "KRW-BTC",
+		Unit:        5,
+		InitialCash: 100000,
+	}
+
+	if err := store.CreatePaperAccount(ctx, account); err != nil {
+		t.Fatal(err)
+	}
+
+	const candleTime int64 = 1790000000
+
+	processed, err := store.MarkPaperCandleProcessed(
+		ctx,
+		account.AccountID,
+		account.Market,
+		account.Unit,
+		candleTime,
+	)
+	if err != nil {
+		t.Fatalf("MarkPaperCandleProcessed failed: %v", err)
+	}
+
+	if !processed {
+		t.Fatal("expected candle to be marked as processed")
+	}
+
+	// The same candle must not be marked twice.
+	processed, err = store.MarkPaperCandleProcessed(
+		ctx,
+		account.AccountID,
+		account.Market,
+		account.Unit,
+		candleTime,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if processed {
+		t.Fatal("expected duplicate candle to be rejected")
+	}
+
+	saved, err := store.GetPaperAccount(ctx, account.AccountID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if saved.LastProcessedCandleTime != candleTime {
+		t.Errorf(
+			"expected last processed time %d, got %d",
+			candleTime,
+			saved.LastProcessedCandleTime,
+		)
+	}
+}

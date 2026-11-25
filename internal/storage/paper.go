@@ -227,6 +227,56 @@ func (s *SQLiteStore) UpdatePaperAccount(
 	return nil
 }
 
+// MarkPaperCandleProcessed marks a candle as processed without executing a trade.
+// It updates the timestamp only if the candle has not been processed before.
+func (s *SQLiteStore) MarkPaperCandleProcessed(
+	ctx context.Context,
+	accountID string,
+	market string,
+	unit int,
+	candleTime int64,
+) (bool, error) {
+	if accountID == "" || market == "" {
+		return false, fmt.Errorf("account ID and market must not be empty")
+	}
+
+	if unit <= 0 || candleTime <= 0 {
+		return false, fmt.Errorf("invalid candle unit or time")
+	}
+
+	query := `
+	UPDATE paper_accounts
+	SET
+		last_processed_candle_time = ?,
+		updated_at = unixepoch()
+	WHERE
+		account_id = ?
+		AND market = ?
+		AND unit = ?
+		AND last_processed_candle_time < ?
+	`
+
+	result, err := s.db.ExecContext(
+		ctx,
+		query,
+		candleTime,
+		accountID,
+		market,
+		unit,
+		candleTime,
+	)
+	if err != nil {
+		return false, fmt.Errorf("mark paper candle processed: %w", err)
+	}
+
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("get affected rows: %w", err)
+	}
+
+	return rows == 1, nil
+}
+
 // SavePaperTrade saves a simulated trade.
 func (s *SQLiteStore) SavePaperTrade(
 	ctx context.Context,
