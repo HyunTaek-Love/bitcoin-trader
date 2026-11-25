@@ -343,7 +343,7 @@ func TestStreamProcessorRecoversAfterGap(t *testing.T) {
 	}
 }
 
-func TestStreamProcessorSkipsWhenRecoveryHasGap(t *testing.T) {
+func TestStreamProcessorEvaluatesAcrossEmptyIntervals(t *testing.T) {
 	engine, store := setupPaperEngine(t)
 	ctx := context.Background()
 
@@ -361,19 +361,19 @@ func TestStreamProcessorSkipsWhenRecoveryHasGap(t *testing.T) {
 		2026, 1, 1, 0, 0, 0, 0, time.UTC,
 	)
 
+	// Prepare the minimum number of completed candles.
 	history := make([]market.Candle, strategy.MinimumCandles)
 
 	for i := range history {
 		history[i] = market.Candle{
-			Market: "KRW-BTC",
-			Time: start.Add(
-				time.Duration(i*5) * time.Minute,
-			),
-			Open:   100000000,
-			High:   101000000,
-			Low:    99000000,
-			Close:  100000000,
-			Volume: 1,
+			Market:      "KRW-BTC",
+			Time:        start.Add(time.Duration(i*5) * time.Minute),
+			Open:        100000000,
+			High:        101000000,
+			Low:         99000000,
+			Close:       100000000,
+			Volume:      1,
+			TradeAmount: 100000000,
 		}
 	}
 
@@ -393,21 +393,30 @@ func TestStreamProcessorSkipsWhenRecoveryHasGap(t *testing.T) {
 		Volume: 1,
 	}
 
+	// First message establishes the baseline.
 	if _, err := processor.HandleCandle(ctx, firstRealtime); err != nil {
 		t.Fatal(err)
 	}
 
-	// The next 5-minute candle is missing from SQLite.
-	// The current candle arrives 10 minutes later.
+	// Simulate periods without trades.
+	// The next generated candle appears 15 minutes later.
 	current := firstRealtime
-	current.Time = firstRealtime.Time.Add(10 * time.Minute)
+	current.Time = firstRealtime.Time.Add(15 * time.Minute)
 
 	result, err := processor.HandleCandle(ctx, current)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("HandleCandle failed: %v", err)
 	}
 
-	if result != nil {
-		t.Fatal("must skip evaluation when recovered history has a gap")
+	if result == nil {
+		t.Fatal("expected strategy evaluation across empty intervals")
+	}
+
+	if !result.Evaluated {
+		t.Fatal("expected strategy to be evaluated")
+	}
+
+	if result.Executed {
+		t.Fatal("HOLD signal must not execute a trade")
 	}
 }

@@ -118,22 +118,6 @@ func (p *StreamProcessor) HandleCandle(
 		return nil, nil
 	}
 
-	// The latest completed candle must be directly before
-	// the current execution candle.
-	//
-	// This allows recovery after a WebSocket reconnect,
-	// but prevents execution when historical data has gaps.
-	lastCompleted := completed[len(completed)-1]
-
-	expectedExecutionTime := lastCompleted.Time.Add(
-		time.Duration(p.unit) * time.Minute,
-	)
-
-	if !expectedExecutionTime.Equal(candle.Time) {
-		p.currentCandleTime = candle.Time
-		return nil, nil
-	}
-
 	// The newest candle is the execution candle.
 	candles := append(completed, candle)
 
