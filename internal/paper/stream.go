@@ -46,6 +46,30 @@ func NewStreamProcessor(
 	}, nil
 }
 
+// Restore initializes the processor from the latest stored candle.
+func (p *StreamProcessor) Restore(ctx context.Context) error {
+	candles, err := p.store.GetCandles(
+		ctx,
+		p.market,
+		p.unit,
+		1,
+	)
+	if err != nil {
+		return fmt.Errorf("load latest candle: %w", err)
+	}
+
+	if len(candles) == 0 {
+		p.initialized = false
+		p.currentCandleTime = time.Time{}
+		return nil
+	}
+
+	p.currentCandleTime = candles[len(candles)-1].Time
+	p.initialized = true
+
+	return nil
+}
+
 // HandleCandle receives a realtime candle update.
 // It evaluates the strategy only when a new candle starts.
 func (p *StreamProcessor) HandleCandle(

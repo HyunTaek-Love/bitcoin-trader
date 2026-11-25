@@ -178,7 +178,13 @@ func runPaperTrading(
 			retryDelay = nextRetryDelay(retryDelay)
 			continue
 		}
-
+		// Restore the processor position after historical synchronization.
+		if err := processor.Restore(ctx); err != nil {
+			return fmt.Errorf(
+				"restore stream processor: %w",
+				err,
+			)
+		}
 		fmt.Println("[WEBSOCKET] Connecting...")
 
 		receivedMessage := false
